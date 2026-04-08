@@ -13,7 +13,6 @@ import {
   orderBy,
   getDocs,
   getDoc,
-  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { USCISCase, CaseHistoryEntry } from "@/types";
