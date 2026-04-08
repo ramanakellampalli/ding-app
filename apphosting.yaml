@@ -29,11 +29,5 @@ env:
   - variable: FIREBASE_SERVICE_ACCOUNT_KEY
     secret: FIREBASE_SERVICE_ACCOUNT_KEY
 
-  - variable: RESEND_API_KEY
-    secret: RESEND_API_KEY
-
-  - variable: CRON_SECRET
-    secret: CRON_SECRET
-
   - variable: MOCK_USCIS
     secret: MOCK_USCIS
