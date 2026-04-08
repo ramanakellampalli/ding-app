@@ -20,7 +20,14 @@ import { CaseCard, CaseCardSkeleton } from "@/components/CaseCard";
 import { StatsCard, StatsCardSkeleton } from "@/components/StatsCard";
 import { AddCaseModal } from "@/components/AddCaseModal";
 import { USCISCase, StatusColor, DashboardStats } from "@/types";
-import { cn } from "@/lib/utils";
+import { canRefresh, cn } from "@/lib/utils";
+import {
+  getUserCases,
+  addCase,
+  deleteCaseById,
+  updateCaseStatus,
+  checkDuplicate,
+} from "@/lib/cases";
 
 type FilterStatus = "all" | StatusColor;
 
@@ -54,13 +61,8 @@ function Dashboard() {
   const fetchCases = useCallback(async () => {
     if (!user) return;
     try {
-      const token = await user.getIdToken();
-      const res = await fetch("/api/cases", {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to load cases");
-      const data = await res.json();
-      setCases(data.cases || []);
+      const data = await getUserCases(user.uid);
+      setCases(data);
     } catch {
       toastError("Failed to load cases", "Please refresh the page.");
     } finally {
@@ -87,8 +89,8 @@ function Dashboard() {
     const matchSearch =
       !search ||
       c.receiptNumber.toLowerCase().includes(search.toLowerCase()) ||
-      c.nickname?.toLowerCase().includes(search.toLowerCase()) ||
-      c.formType?.toLowerCase().includes(search.toLowerCase()) ||
+      (c.nickname?.toLowerCase() ?? "").includes(search.toLowerCase()) ||
+      (c.formType?.toLowerCase() ?? "").includes(search.toLowerCase()) ||
       c.currentStatus.title.toLowerCase().includes(search.toLowerCase());
     const matchFilter =
       filterStatus === "all" || c.currentStatus.color === filterStatus;
@@ -97,68 +99,87 @@ function Dashboard() {
 
   const handleAddCase = async (receiptNumber: string, nickname?: string) => {
     if (!user) return;
-    const token = await user.getIdToken();
-    const res = await fetch("/api/cases", {
+
+    const isDuplicate = await checkDuplicate(user.uid, receiptNumber);
+    if (isDuplicate) throw new Error("You are already tracking this case.");
+
+    // Fetch status via proxy API (no Admin SDK needed here)
+    const res = await fetch("/api/status", {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ receiptNumber, nickname }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ receiptNumber }),
     });
-    if (!res.ok) {
-      const data = await res.json();
-      throw new Error(data.error || "Failed to add case");
-    }
-    const newCase = await res.json();
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to fetch status from USCIS.");
+
+    const newCase = await addCase(user.uid, receiptNumber, nickname, data.status);
     setCases((prev) => [newCase, ...prev]);
-    success(`Case ${receiptNumber} added!`, `Status: ${newCase.currentStatus.title}`);
+    success(`Case ${receiptNumber} added!`, data.status.title);
   };
 
   const handleDelete = async (id: string) => {
-    if (!user) return;
     // Optimistic remove
     setCases((prev) => prev.filter((c) => c.id !== id));
     try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/cases/${id}`, {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Delete failed");
+      await deleteCaseById(id);
       success("Case removed");
     } catch {
-      fetchCases(); // revert
+      fetchCases(); // revert on failure
       toastError("Failed to remove case");
     }
   };
 
   const handleRefresh = async (id: string) => {
-    if (!user) return;
+    const caseData = cases.find((c) => c.id === id);
+    if (!caseData) return;
+
+    if (!canRefresh(caseData.lastRefreshed)) {
+      info("Rate limited", "Please wait 30 minutes between manual refreshes.");
+      return;
+    }
+
     setRefreshingId(id);
     try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/cases/${id}`, {
+      const res = await fetch("/api/status", {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ receiptNumber: caseData.receiptNumber }),
       });
       const data = await res.json();
       if (!res.ok) {
-        if (res.status === 429) {
-          info("Rate limited", data.error);
-        } else {
-          toastError("Refresh failed", data.error);
-        }
+        toastError("Refresh failed", data.error);
         return;
       }
+
+      const statusChanged = data.status.title !== caseData.currentStatus.title;
+      await updateCaseStatus(id, data.status, caseData.history, statusChanged);
+
       setCases((prev) =>
         prev.map((c) =>
           c.id === id
-            ? { ...c, currentStatus: data.status, lastRefreshed: data.lastRefreshed, lastChecked: data.lastRefreshed }
+            ? {
+                ...c,
+                currentStatus: data.status,
+                lastRefreshed: data.status.checkedAt,
+                lastChecked: data.status.checkedAt,
+                history: statusChanged
+                  ? [
+                      ...c.history,
+                      {
+                        id: crypto.randomUUID(),
+                        title: data.status.title,
+                        description: data.status.description,
+                        color: data.status.color,
+                        recordedAt: data.status.checkedAt,
+                      },
+                    ]
+                  : c.history,
+              }
             : c
         )
       );
-      if (data.statusChanged) {
+
+      if (statusChanged) {
         success("Status updated!", data.status.title);
       } else {
         info("No change", "Status is unchanged.");
@@ -183,7 +204,9 @@ function Dashboard() {
               Dashboard
             </h1>
             <p className="text-sm text-[var(--muted-foreground)] mt-0.5">
-              {cases.length === 0
+              {loading
+                ? "Loading…"
+                : cases.length === 0
                 ? "No cases tracked yet"
                 : `Tracking ${cases.length} case${cases.length !== 1 ? "s" : ""}`}
             </p>
@@ -205,10 +228,10 @@ function Dashboard() {
             Array.from({ length: 4 }).map((_, i) => <StatsCardSkeleton key={i} />)
           ) : (
             <>
-              <StatsCard label="Total Cases" value={stats.total} icon={FileStack} color="indigo" index={0} />
-              <StatsCard label="Approved" value={stats.approved} icon={CheckCircle2} color="green" index={1} />
-              <StatsCard label="Pending" value={stats.pending} icon={Clock} color="yellow" index={2} />
-              <StatsCard label="Need Attention" value={stats.needAttention} icon={AlertTriangle} color="red" index={3} />
+              <StatsCard label="Total Cases"    value={stats.total}         icon={FileStack}    color="indigo"  index={0} />
+              <StatsCard label="Approved"       value={stats.approved}      icon={CheckCircle2} color="green"   index={1} />
+              <StatsCard label="Pending"        value={stats.pending}       icon={Clock}        color="yellow"  index={2} />
+              <StatsCard label="Need Attention" value={stats.needAttention} icon={AlertTriangle} color="red"   index={3} />
             </>
           )}
         </div>
@@ -250,9 +273,7 @@ function Dashboard() {
         {/* Cases Grid */}
         {loading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <CaseCardSkeleton key={i} />
-            ))}
+            {Array.from({ length: 3 }).map((_, i) => <CaseCardSkeleton key={i} />)}
           </div>
         ) : filtered.length === 0 ? (
           <EmptyState
@@ -286,25 +307,13 @@ function Dashboard() {
   );
 }
 
-function EmptyState({
-  hasSearch,
-  onAdd,
-}: {
-  hasSearch: boolean;
-  onAdd: () => void;
-}) {
+function EmptyState({ hasSearch, onAdd }: { hasSearch: boolean; onAdd: () => void }) {
   if (hasSearch) {
     return (
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="text-center py-16"
-      >
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-16">
         <Search className="h-10 w-10 mx-auto text-[var(--muted-foreground)] mb-3 opacity-50" aria-hidden />
         <p className="text-[var(--foreground)] font-medium">No cases match your search</p>
-        <p className="text-sm text-[var(--muted-foreground)] mt-1">
-          Try adjusting your filters or search query
-        </p>
+        <p className="text-sm text-[var(--muted-foreground)] mt-1">Try adjusting your filters</p>
       </motion.div>
     );
   }
@@ -318,11 +327,9 @@ function EmptyState({
       <div className="inline-flex h-20 w-20 items-center justify-center rounded-2xl bg-indigo-500/10 mb-6">
         <FolderOpen className="h-10 w-10 text-indigo-400" aria-hidden />
       </div>
-      <h2 className="text-xl font-semibold text-[var(--foreground)] mb-2">
-        No cases tracked yet
-      </h2>
+      <h2 className="text-xl font-semibold text-[var(--foreground)] mb-2">No cases tracked yet</h2>
       <p className="text-sm text-[var(--muted-foreground)] max-w-sm mx-auto mb-6">
-        Add your USCIS receipt number to start tracking your case status in real-time with instant notifications.
+        Add your USCIS receipt number to start tracking your case status in real-time.
       </p>
       <button
         onClick={onAdd}

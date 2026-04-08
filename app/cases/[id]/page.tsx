@@ -21,6 +21,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
 import { USCISCase } from "@/types";
 import { formatDateTime, timeAgo, canRefresh, nextRefreshIn, cn } from "@/lib/utils";
+import { getCaseById, updateCaseStatus } from "@/lib/cases";
 
 export default function CaseDetailPage() {
   return (
@@ -43,13 +44,8 @@ function CaseDetail() {
   const fetchCase = useCallback(async () => {
     if (!user) return;
     try {
-      const token = await user.getIdToken();
-      const res = await fetch("/api/cases", {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      const found = data.cases?.find((c: USCISCase) => c.id === params.id);
-      if (!found) {
+      const found = await getCaseById(params.id);
+      if (!found || found.userId !== user.uid) {
         router.replace("/dashboard");
         return;
       }
@@ -66,46 +62,53 @@ function CaseDetail() {
   }, [fetchCase]);
 
   const handleRefresh = async () => {
-    if (!user || !caseData) return;
+    if (!caseData) return;
+
+    if (!canRefresh(caseData.lastRefreshed)) {
+      info("Rate limited", "Please wait 30 minutes between manual refreshes.");
+      return;
+    }
+
     setRefreshing(true);
     try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/cases/${params.id}`, {
+      const res = await fetch("/api/status", {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ receiptNumber: caseData.receiptNumber }),
       });
       const data = await res.json();
       if (!res.ok) {
-        if (res.status === 429) {
-          info("Rate limited", data.error);
-        } else {
-          toastError("Refresh failed", data.error);
-        }
+        toastError("Refresh failed", data.error);
         return;
       }
-      setCaseData((prev) =>
-        prev
-          ? {
-              ...prev,
-              currentStatus: data.status,
-              lastRefreshed: data.lastRefreshed,
-              lastChecked: data.lastRefreshed,
-              history: data.statusChanged
-                ? [
-                    ...prev.history,
-                    {
-                      id: crypto.randomUUID(),
-                      title: data.status.title,
-                      description: data.status.description,
-                      color: data.status.color,
-                      recordedAt: data.lastRefreshed,
-                    },
-                  ]
-                : prev.history,
-            }
-          : null
-      );
-      if (data.statusChanged) {
+
+      const statusChanged = data.status.title !== caseData.currentStatus.title;
+      await updateCaseStatus(params.id, data.status, caseData.history, statusChanged);
+
+      setCaseData((prev) => {
+        if (!prev) return null;
+        const newHistory = statusChanged
+          ? [
+              ...prev.history,
+              {
+                id: crypto.randomUUID(),
+                title: data.status.title,
+                description: data.status.description,
+                color: data.status.color,
+                recordedAt: data.status.checkedAt,
+              },
+            ]
+          : prev.history;
+        return {
+          ...prev,
+          currentStatus: data.status,
+          lastRefreshed: data.status.checkedAt,
+          lastChecked: data.status.checkedAt,
+          history: newHistory,
+        };
+      });
+
+      if (statusChanged) {
         success("Status updated!", data.status.title);
       } else {
         info("No change", "Status is unchanged.");
