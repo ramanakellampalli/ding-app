@@ -33,8 +33,8 @@ export interface USCISCase {
 export interface UserProfile {
   uid: string;
   email: string;
-  displayName?: string;
-  photoURL?: string;
+  displayName?: string | null;
+  photoURL?: string | null;
   fcmToken?: string;
   notifyEmail: boolean;
   notifyPush: boolean;
