@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Bell, BellOff, Mail, Smartphone } from "lucide-react";
+import { Bell, BellOff, Smartphone } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
@@ -25,13 +25,6 @@ export function NotificationToggle() {
   };
 
   const toggles = [
-    {
-      key: "notifyEmail" as const,
-      label: "Email notifications",
-      description: "Receive status change alerts by email",
-      icon: Mail,
-      value: profile.notifyEmail,
-    },
     {
       key: "notifyPush" as const,
       label: "Push notifications",

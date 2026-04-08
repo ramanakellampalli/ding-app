@@ -3,7 +3,6 @@ import { adminDb } from "@/lib/firebase-admin";
 import { fetchCaseStatus } from "@/lib/uscis";
 import {
   sendPushNotification,
-  sendEmailNotification,
   recordNotification,
 } from "@/lib/notifications";
 
@@ -75,17 +74,6 @@ export async function GET(req: NextRequest) {
                   `Case Update: ${nickname || receiptNumber}`,
                   newStatus.title,
                   { caseId: caseDoc.id, receiptNumber }
-                );
-              }
-
-              if (user.notifyEmail && user.email) {
-                await sendEmailNotification(
-                  user.email,
-                  receiptNumber,
-                  nickname,
-                  currentStatus?.title || "Unknown",
-                  newStatus.title,
-                  newStatus.description
                 );
               }
 

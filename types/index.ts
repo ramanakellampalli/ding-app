@@ -36,7 +36,6 @@ export interface UserProfile {
   displayName?: string | null;
   photoURL?: string | null;
   fcmToken?: string;
-  notifyEmail: boolean;
   notifyPush: boolean;
   notifyAllUpdates: boolean;
   createdAt: string;
