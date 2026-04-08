@@ -1,7 +1,12 @@
 import { adminMessaging, adminDb } from "./firebase-admin";
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resend: Resend | null = null;
+function getResend(): Resend | null {
+  if (!process.env.RESEND_API_KEY) return null;
+  if (!resend) resend = new Resend(process.env.RESEND_API_KEY);
+  return resend;
+}
 
 export async function sendPushNotification(
   fcmToken: string,
@@ -36,11 +41,12 @@ export async function sendEmailNotification(
   newStatus: string,
   description: string
 ) {
-  if (!process.env.RESEND_API_KEY) return;
+  const client = getResend();
+  if (!client) return;
   const caseLabel = nickname ? `${nickname} (${receiptNumber})` : receiptNumber;
 
   try {
-    await resend.emails.send({
+    await client.emails.send({
       from: "Ding Case Tracker <notifications@ding.app>",
       to,
       subject: `Case Update: ${caseLabel} → ${newStatus}`,
