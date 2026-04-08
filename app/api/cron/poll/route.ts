@@ -7,7 +7,12 @@ import {
   recordNotification,
 } from "@/lib/notifications";
 
-export const maxDuration = 300; // 5 minutes
+// Firebase App Hosting runs on Cloud Run — no maxDuration limit needed.
+// Schedule this endpoint via Google Cloud Scheduler:
+//   URL: https://<your-app>.web.app/api/cron/poll
+//   Method: GET
+//   Frequency: every 4 hours  →  0 */4 * * *
+//   Add header: Authorization: Bearer <CRON_SECRET>
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {

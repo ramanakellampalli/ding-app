@@ -2,16 +2,7 @@ import * as cheerio from "cheerio";
 import { StatusColor, CaseStatus } from "@/types";
 
 export const RECEIPT_PREFIXES = [
-  "EAC",
-  "WAC",
-  "LIN",
-  "SRC",
-  "IOE",
-  "MSC",
-  "NBC",
-  "YSC",
-  "ZAR",
-  "ZCH",
+  "EAC", "WAC", "LIN", "SRC", "IOE", "MSC", "NBC", "YSC", "ZAR", "ZCH",
 ];
 
 export const RECEIPT_PATTERN = /^[A-Z]{3}\d{10}$/;
@@ -48,22 +39,19 @@ export function classifyStatus(title: string): StatusColor {
     t.includes("card was mailed") ||
     t.includes("card was produced") ||
     t.includes("permanently resident")
-  )
-    return "approved";
+  ) return "approved";
   if (
     t.includes("request for evidence") ||
     t.includes("rfe") ||
     t.includes("additional evidence") ||
     t.includes("notice of intent to deny")
-  )
-    return "rfe";
+  ) return "rfe";
   if (
     t.includes("denied") ||
     t.includes("revoked") ||
     t.includes("terminated") ||
     t.includes("rejected")
-  )
-    return "denied";
+  ) return "denied";
   if (
     t.includes("received") ||
     t.includes("pending") ||
@@ -75,18 +63,88 @@ export function classifyStatus(title: string): StatusColor {
     t.includes("dispatched") ||
     t.includes("updated") ||
     t.includes("interview")
-  )
-    return "pending";
+  ) return "pending";
   return "unknown";
 }
 
-const USCIS_ENDPOINT = "https://egov.uscis.gov/casestatus/landing.do";
+const USCIS_BASE = "https://egov.uscis.gov";
+const USCIS_ENDPOINT = `${USCIS_BASE}/casestatus/landing.do`;
+
+// Browser-like headers USCIS expects
+const BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Cache-Control": "no-cache",
+  Pragma: "no-cache",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "same-origin",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1",
+};
+
 const CACHE = new Map<string, { data: CaseStatus; expiresAt: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-export async function fetchCaseStatus(
-  receiptNumber: string
-): Promise<CaseStatus> {
+/**
+ * Step 1 — GET the landing page to obtain a session cookie.
+ * Step 2 — POST with that cookie + the receipt number.
+ * This mimics the real browser flow USCIS expects.
+ */
+async function fetchWithSession(receiptNumber: string): Promise<string> {
+  // Step 1: GET to establish session
+  const getRes = await fetch(USCIS_ENDPOINT, {
+    method: "GET",
+    headers: BROWSER_HEADERS,
+    redirect: "follow",
+    signal: AbortSignal.timeout(15000),
+  });
+
+  // Collect Set-Cookie headers
+  const setCookie = getRes.headers.get("set-cookie") ?? "";
+  const cookies = parseCookies(setCookie);
+
+  // Step 2: POST with the session cookie
+  const body = new URLSearchParams({
+    appReceiptNum: receiptNumber,
+    caseStatusSearchBtn: "CHECK STATUS",
+  });
+
+  const postRes = await fetch(USCIS_ENDPOINT, {
+    method: "POST",
+    headers: {
+      ...BROWSER_HEADERS,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Origin: USCIS_BASE,
+      Referer: USCIS_ENDPOINT,
+      ...(cookies ? { Cookie: cookies } : {}),
+    },
+    body: body.toString(),
+    redirect: "follow",
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!postRes.ok) {
+    throw new Error(`USCIS returned HTTP ${postRes.status}`);
+  }
+
+  return postRes.text();
+}
+
+/** Extract name=value pairs from a Set-Cookie header string */
+function parseCookies(setCookieHeader: string): string {
+  return setCookieHeader
+    .split(",")
+    .map((c) => c.split(";")[0].trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
+export async function fetchCaseStatus(receiptNumber: string): Promise<CaseStatus> {
   const key = receiptNumber.toUpperCase();
 
   const cached = CACHE.get(key);
@@ -99,28 +157,7 @@ export async function fetchCaseStatus(
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const body = new URLSearchParams({
-        appReceiptNum: key,
-        caseStatusSearchBtn: "CHECK STATUS",
-      });
-
-      const res = await fetch(USCIS_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent":
-            "Mozilla/5.0 (compatible; DingCaseTracker/1.0; +https://ding.app)",
-          Referer: "https://egov.uscis.gov/casestatus/landing.do",
-        },
-        body: body.toString(),
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!res.ok) {
-        throw new Error(`USCIS returned HTTP ${res.status}`);
-      }
-
-      const html = await res.text();
+      const html = await fetchWithSession(key);
       const parsed = parseUSCISResponse(html);
 
       const result: CaseStatus = {
@@ -139,55 +176,40 @@ export async function fetchCaseStatus(
     }
   }
 
-  throw lastError || new Error("Failed to fetch USCIS status");
+  throw lastError ?? new Error("Failed to fetch USCIS status");
 }
 
-export function parseUSCISResponse(html: string): Omit<CaseStatus, "rawHtml" | "checkedAt"> {
+export function parseUSCISResponse(
+  html: string
+): Omit<CaseStatus, "rawHtml" | "checkedAt"> {
   const $ = cheerio.load(html);
 
   let title = "";
   let description = "";
 
-  // Try various selectors USCIS uses
-  const h1 = $("h1").first().text().trim();
-  const h2 = $("h2").first().text().trim();
-  const mainHeader =
-    $(".current-status-sec h2, .case-status h2, #current_status h2, .rows h2")
-      .first()
-      .text()
-      .trim();
-
+  // Primary selectors matching USCIS page structure
   title =
-    mainHeader ||
+    $(".current-status-sec h2, .case-status h2, #current_status h2, .rows h2")
+      .first().text().trim() ||
     $(".appointment-sec h2, .entry-title, .case-status-result h1")
-      .first()
-      .text()
-      .trim() ||
-    h2 ||
-    h1 ||
+      .first().text().trim() ||
+    $("h2").filter((_, el) => {
+      const t = $(el).text().trim();
+      return !!t && !t.toLowerCase().includes("uscis.gov") && t.length < 200;
+    }).first().text().trim() ||
+    $("h1").first().text().trim() ||
     "Status Unknown";
 
   description =
     $(".appointment-sec p, .case-status p, #current_status p, .rows.text-center p")
-      .first()
-      .text()
-      .trim() ||
-    $("p").filter((_, el) => $(el).text().length > 50).first().text().trim() ||
+      .first().text().trim() ||
+    $("p").filter((_, el) => $(el).text().trim().length > 50)
+      .first().text().trim() ||
     "No description available.";
 
-  // Fallback: look for the main content block
-  if (!title || title === "Status Unknown") {
-    const allH2 = $("h2").toArray();
-    for (const el of allH2) {
-      const text = $(el).text().trim();
-      if (text && !text.toLowerCase().includes("uscis") && text.length < 200) {
-        title = text;
-        break;
-      }
-    }
-  }
-
-  const color = classifyStatus(title);
-
-  return { title: title || "Status Unknown", description: description || "", color };
+  return {
+    title: title || "Status Unknown",
+    description: description || "",
+    color: classifyStatus(title),
+  };
 }
