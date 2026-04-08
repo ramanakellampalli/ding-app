@@ -37,3 +37,6 @@ env:
 
   - variable: CRON_SECRET
     secret: CRON_SECRET
+
+  - variable: MOCK_USCIS
+    secret: MOCK_USCIS
