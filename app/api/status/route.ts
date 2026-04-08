@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchCaseStatus, validateReceiptNumber, normalizeReceiptNumber } from "@/lib/uscis";
+import { getMockCaseStatus } from "@/lib/uscis-mock";
+
+const IS_MOCK = process.env.MOCK_USCIS === "true";
 
 export async function POST(req: NextRequest) {
   try {
@@ -17,16 +20,17 @@ export async function POST(req: NextRequest) {
 
     if (!validateReceiptNumber(normalized)) {
       return NextResponse.json(
-        {
-          error:
-            "Invalid receipt number format. Expected format: 3 letters + 10 digits (e.g. EAC2190123456)",
-        },
+        { error: "Invalid receipt number format. Expected: 3 letters + 10 digits (e.g. EAC2190123456)" },
         { status: 422 }
       );
     }
 
-    const status = await fetchCaseStatus(normalized);
+    if (IS_MOCK) {
+      const status = getMockCaseStatus(normalized);
+      return NextResponse.json({ receiptNumber: normalized, status, mock: true });
+    }
 
+    const status = await fetchCaseStatus(normalized);
     return NextResponse.json({ receiptNumber: normalized, status });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -34,8 +38,7 @@ export async function POST(req: NextRequest) {
     if (message.includes("USCIS") || message.includes("HTTP")) {
       return NextResponse.json(
         {
-          error:
-            "USCIS system is temporarily unavailable. Please try again in a few minutes.",
+          error: "USCIS system is temporarily unavailable. Please try again in a few minutes.",
           detail: message,
         },
         { status: 503 }
