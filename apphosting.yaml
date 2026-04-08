@@ -25,9 +25,6 @@ env:
   - variable: NEXT_PUBLIC_FIREBASE_APP_ID
     secret: NEXT_PUBLIC_FIREBASE_APP_ID
 
-  - variable: NEXT_PUBLIC_FIREBASE_VAPID_KEY
-    secret: NEXT_PUBLIC_FIREBASE_VAPID_KEY
-
   # Server-side secrets
   - variable: FIREBASE_SERVICE_ACCOUNT_KEY
     secret: FIREBASE_SERVICE_ACCOUNT_KEY
